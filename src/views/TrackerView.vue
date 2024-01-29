@@ -146,7 +146,7 @@ function getCropOptions (context: CanvasRenderingContext2D | null, width: number
     const og_width: number = 2400;
     const og_height: number = 1080;
     const og_topLeftX: number = 775;
-    const og_topLeftY: number = 240;
+    const og_topLeftY: number = 315;
 
     const imageX_scale: number = width / og_width;
     const imageY_scale: number = height / og_height;
@@ -185,10 +185,31 @@ function binarize (context: CanvasRenderingContext2D | null, width: number, heig
     return imageData;
 }
 
-async function preprocessImage (file: File): Promise<File> {
+async function splitImage (preprocessCanvas: HTMLCanvasElement): Promise<File[]> {
     return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        let modifiedFile: File;
+        const pullCanvas: HTMLCanvasElement = document.createElement('canvas');
+        const pullContext: CanvasRenderingContext2D | null = pullCanvas.getContext('2d');
+        if (!pullContext) { reject(new Error('getContext failed (pullCanvas, splitImage)')); }
+        pullCanvas.width = preprocessCanvas.width;
+        pullCanvas.height = ~~(preprocessCanvas.height / 11); /* divide by number of rows in image */
+
+        const pullByPullImages: File[] = [];
+        for (let pullIndex = 0; pullIndex < 10; pullIndex++) {
+            pullContext?.drawImage(preprocessCanvas,
+                0, pullCanvas.height * pullIndex, preprocessCanvas.width, pullCanvas.height, /* src */
+                0, 0, pullCanvas.width, pullCanvas.height /* dst */
+            );
+            pullCanvas.toBlob((blob) => {
+                pullByPullImages.push(new File([blob as Blob], `test-${pullIndex++}`, { type: 'png' }));
+                resolve(pullByPullImages);
+            }, 'png');
+        }
+    });
+}
+
+async function preprocessImage (file: File): Promise<HTMLCanvasElement> {
+    return new Promise((resolve, reject) => {
+        const reader: FileReader = new FileReader();
         reader.onload = (event: ProgressEvent<FileReader>) => {
             const img = document.createElement('img');
             img.onload = () => {
@@ -215,10 +236,7 @@ async function preprocessImage (file: File): Promise<File> {
                     0, 0, cropped_canvas.width, cropped_canvas.height /* dst */
                 );
 
-                cropped_canvas.toBlob((blob) => {
-                    modifiedFile = new File([blob as Blob], file.name, { type: file.type });
-                    resolve(modifiedFile);
-                }, file.type);
+                resolve(cropped_canvas);
             };
             img.src = event.target?.result as string;
         };
@@ -267,12 +285,13 @@ const ocr: clickHandler = (payload: Event): void => {
                 currentFileIndex.value = i + 1;
                 totalFiles.value = fileList.length;
                 if (file) {
-                    const modifiedImage: File = await preprocessImage(file);
-                    const ret: Tesseract.RecognizeResult = await worker.recognize(modifiedImage);
-                    text.value = ret.data.text;
-                    // console.log(text.value);
-                    // (document.getElementById('testing') as HTMLImageElement).src = modifiedImage.toDataURL(); /* if modifiedImage is canvas */
-                    // (document.getElementById('testing') as HTMLImageElement).src = URL.createObjectURL(modifiedImage); /* if modifiedImage is file */
+                    const preprocessCanvas: HTMLCanvasElement = await preprocessImage(file);
+                    const pullByPullImages: File[] = await splitImage(preprocessCanvas);
+                    (document.getElementById('testing') as HTMLImageElement).src = URL.createObjectURL(pullByPullImages[0]); /* if modifiedImage is file */
+
+                    const ret: Tesseract.RecognizeResult = await worker.recognize(pullByPullImages[0]);
+                    text.value = ret.data.text + '\n';
+                    console.log(text.value);
 
                     const arcanistNameGroup: string = /^\W*(?<ArcanistName>\d*[A-Za-z.,]+(?:\s[A-Za-z.,1]+)*)/.source;
                     const parenGroup: string = /.*(?:\(?.*\)?)?.*/.source;
@@ -419,7 +438,7 @@ watchEffect(() => {
 </script>
 
 <template>
-    <!-- <img id="testing" src=""/> -->
+    <img id="testing" src=""/>
     <div class="responsive-spacer">
         <h2 class="text-2xl text-white font-bold mb-4 lg:mb-6">
             {{ $t('summon-tracker') }}
