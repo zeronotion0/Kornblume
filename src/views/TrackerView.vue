@@ -22,7 +22,6 @@ const changelogsStore = useChangelogsStore();
 const tutorialButton = ref<HTMLButtonElement>(null!);
 
 const triggerFileInput = () => {
-    // Trigger the file input programmatically
     fileInput.value.click()
 }
 
@@ -185,25 +184,37 @@ function binarize (context: CanvasRenderingContext2D | null, width: number, heig
     return imageData;
 }
 
-async function splitImage (preprocessCanvas: HTMLCanvasElement): Promise<File[]> {
+async function debugLineByLineOCR (pullIndex: number, source: string, result: string): Promise<void> {
+    const img: HTMLElement | null = document.getElementById('testing');
+    if (!img) console.log('uncomment img w/ testing id in template below');
+    (img as HTMLImageElement).src = source;
+    console.log('pull index: ', pullIndex + 1, '\nocr result:', result);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+}
+
+async function lineByLineOCR (preprocessCanvas: HTMLCanvasElement, debug?: boolean): Promise<string> {
     return new Promise((resolve, reject) => {
+        let output: string = '';
         const pullCanvas: HTMLCanvasElement = document.createElement('canvas');
         const pullContext: CanvasRenderingContext2D | null = pullCanvas.getContext('2d');
-        if (!pullContext) { reject(new Error('getContext failed (pullCanvas, splitImage)')); }
+        if (!pullContext) { reject(new Error('getContext failed (splitImage)')); }
         pullCanvas.width = preprocessCanvas.width;
         pullCanvas.height = ~~(preprocessCanvas.height / 11); /* divide by number of rows in image */
 
-        const pullByPullImages: File[] = [];
-        for (let pullIndex = 0; pullIndex < 10; pullIndex++) {
-            pullContext?.drawImage(preprocessCanvas,
-                0, pullCanvas.height * pullIndex, preprocessCanvas.width, pullCanvas.height, /* src */
-                0, 0, pullCanvas.width, pullCanvas.height /* dst */
-            );
-            pullCanvas.toBlob((blob) => {
-                pullByPullImages.push(new File([blob as Blob], `test-${pullIndex++}`, { type: 'png' }));
-                resolve(pullByPullImages);
-            }, 'png');
-        }
+        (async (): Promise<void> => {
+            const worker: Tesseract.Worker = await createWorker('eng');
+            for (let pullIndex = 0; pullIndex < 10; pullIndex++) {
+                pullContext?.drawImage(preprocessCanvas,
+                    0, pullCanvas.height * pullIndex, preprocessCanvas.width, pullCanvas.height, /* src */
+                    0, 0, pullCanvas.width, pullCanvas.height /* dst */
+                );
+                const ret: Tesseract.RecognizeResult = await worker.recognize(pullCanvas.toDataURL());
+                output += ret.data.text;
+                if (debug) { await debugLineByLineOCR(pullIndex, pullCanvas.toDataURL(), ret.data.text); }
+            }
+            await worker.terminate();
+            resolve(output);
+        })();
     });
 }
 
@@ -257,7 +268,7 @@ function convertGoldenThreadString (goldenThread: string, value: 'digit' | 'roma
 }
 
 type clickHandler = (payload: Event) => void | undefined;
-const ocr: clickHandler = (payload: Event): void => {
+const handleUpload: clickHandler = (payload: Event): void => {
     const fileList: FileList | null = (payload.target as HTMLInputElement).files;
     const timestampMapping = pulls.value.reduce((prev, curr) => {
         const { Timestamp } = curr;
@@ -279,19 +290,14 @@ const ocr: clickHandler = (payload: Event): void => {
         isImporting.value = true;
         (async (): Promise<void> => {
             // const startTime = performance.now();
-            const worker: Tesseract.Worker = await createWorker('eng');
             for (let i: number = 0; i < fileList.length; i++) {
                 const file: File = fileList[i];
                 currentFileIndex.value = i + 1;
                 totalFiles.value = fileList.length;
                 if (file) {
                     const preprocessCanvas: HTMLCanvasElement = await preprocessImage(file);
-                    const pullByPullImages: File[] = await splitImage(preprocessCanvas);
-                    (document.getElementById('testing') as HTMLImageElement).src = URL.createObjectURL(pullByPullImages[0]); /* if modifiedImage is file */
-
-                    const ret: Tesseract.RecognizeResult = await worker.recognize(pullByPullImages[0]);
-                    text.value = ret.data.text + '\n';
-                    console.log(text.value);
+                    text.value = await lineByLineOCR(preprocessCanvas);
+                    /* console.log(text.value); */
 
                     const arcanistNameGroup: string = /^\W*(?<ArcanistName>\d*[A-Za-z.,]+(?:\s[A-Za-z.,1]+)*)/.source;
                     const parenGroup: string = /.*(?:\(?.*\)?)?.*/.source;
@@ -407,7 +413,6 @@ const ocr: clickHandler = (payload: Event): void => {
                     ...flattenPullsArrayByTimestamp[ts]
                 ]
             })
-            await worker.terminate();
             pulls.value = result;
             isImporting.value = false;
             // const endTime = performance.now();
@@ -421,7 +426,6 @@ onMounted(() => {
         pulls.value = [...usePullsRecordStore().data]
     }
     if (!changelogsStore.isOpenTutorial) {
-        console.log(tutorialButton.value);
         if (tutorialButton.value) {
             tutorialButton.value.click();
         }
@@ -438,7 +442,7 @@ watchEffect(() => {
 </script>
 
 <template>
-    <img id="testing" src=""/>
+    <!-- <img id="testing" src=""/> -->
     <div class="responsive-spacer">
         <h2 class="text-2xl text-white font-bold mb-4 lg:mb-6">
             {{ $t('summon-tracker') }}
@@ -446,7 +450,7 @@ watchEffect(() => {
         </h2>
         <div class="flex justify-between">
             <div class="flex flex-wrap space-x-3 gap-y-2 items-center">
-                <input type="file" ref="fileInput" @change="ocr" accept="image/*" class="ml-4" style="display: none;"
+                <input type="file" ref="fileInput" @change="handleUpload" accept="image/*" class="ml-4" style="display: none;"
                     multiple />
                 <button id="import-button" @click="triggerFileInput" :disabled="isImporting"
                     class="bg-success bg-gradient-to-br from-success to-green-600 focus:ring-2 focus:outline-none focus:ring-green-200 hover:bg-gradient-to-bl text-white/90 font-bold py-2 px-4 rounded ml-2">
